@@ -48,7 +48,7 @@ function getClientKey(req) {
 module.exports = async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-  if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'AI is not configured yet. Add OPENAI_API_KEY in Vercel project settings.' });
+  if (!process.env.GEMINI_API_KEY) return res.status(503).json({ error: 'AI is not configured yet. Add GEMINI_API_KEY in Vercel project settings.' });
 
   const key = getClientKey(req);
   const now = Date.now();
@@ -62,36 +62,48 @@ module.exports = async function handler(req, res) {
   const body = req.body || {};
   const message = typeof body.message === 'string' ? body.message.trim().slice(0, 800) : '';
   if (!message) return res.status(400).json({ error: 'A message is required.' });
+
   const history = Array.isArray(body.history) ? body.history.slice(-12).map(item => ({
-    role: item && item.role === 'assistant' ? 'assistant' : 'user',
-    content: typeof (item && item.content) === 'string' ? item.content.slice(0, 1200) : ''
-  })).filter(item => item.content.trim()) : [];
+    role: item && item.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: typeof (item && item.content) === 'string' ? item.content.slice(0, 1200) : '' }]
+  })).filter(item => item.parts[0].text.trim()) : [];
+
+  while (history.length && history[0].role !== 'user') {
+    history.shift();
+  }
 
   try {
-    const response = await fetch('https://api.openai.com/v1/responses', {
+    const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'x-goog-api-key': process.env.GEMINI_API_KEY,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: process.env.OPENAI_MODEL || 'gpt-5.5',
-        instructions: portfolioKnowledge,
-        input: [...history, { role: 'user', content: message }],
-        max_output_tokens: 450,
-        store: false
+        systemInstruction: {
+          parts: [{ text: portfolioKnowledge }]
+        },
+        contents: [
+          ...history,
+          { role: 'user', parts: [{ text: message }] }
+        ],
+        generationConfig: {
+          maxOutputTokens: 1024
+        }
       })
     });
+
     const data = await response.json();
     if (!response.ok) {
-      console.error('OpenAI API error:', response.status, data && data.error && data.error.code);
+      console.error('Gemini API error:', response.status, data && data.error && (data.error.status || data.error.message));
       return res.status(502).json({ error: 'The AI service is temporarily unavailable.' });
     }
-    const reply = typeof data.output_text === 'string' ? data.output_text.trim() : (data.output || [])
-      .filter(item => item.type === 'message')
-      .flatMap(item => item.content || [])
-      .filter(item => item.type === 'output_text')
-      .map(item => item.text || '').join('\n').trim();
+
+    const candidate = data && Array.isArray(data.candidates) ? data.candidates[0] : null;
+    const parts = candidate && candidate.content && Array.isArray(candidate.content.parts) ? candidate.content.parts : [];
+    const reply = parts.map(part => part.text || '').join('\n').trim();
+
     if (!reply) return res.status(502).json({ error: 'The AI returned an empty response.' });
     return res.status(200).json({ reply });
   } catch (error) {
