@@ -72,31 +72,47 @@ module.exports = async function handler(req, res) {
     history.shift();
   }
 
-  try {
-    const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-      method: 'POST',
-      headers: {
-        'x-goog-api-key': process.env.GEMINI_API_KEY,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: portfolioKnowledge }]
-        },
-        contents: [
-          ...history,
-          { role: 'user', parts: [{ text: message }] }
-        ],
-        generationConfig: {
-          maxOutputTokens: 1024
-        }
-      })
-    });
+  const candidateModels = [
+    process.env.GEMINI_MODEL,
+    'gemini-flash-latest',
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite',
+    'gemini-2.0-flash'
+  ].filter((value, index, array) => Boolean(value) && array.indexOf(value) === index);
 
-    const data = await response.json();
+  try {
+    let response = null;
+    let data = null;
+    let usedModel = '';
+
+    for (const model of candidateModels) {
+      usedModel = model;
+      response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: 'POST',
+        headers: {
+          'x-goog-api-key': process.env.GEMINI_API_KEY,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [{ text: portfolioKnowledge }]
+          },
+          contents: [
+            ...history,
+            { role: 'user', parts: [{ text: message }] }
+          ],
+          generationConfig: {
+            maxOutputTokens: 1024
+          }
+        })
+      });
+
+      data = await response.json();
+      if (response.status !== 404) break;
+    }
+
     if (!response.ok) {
-      console.error('Gemini API error:', response.status, data && data.error && (data.error.status || data.error.message));
+      console.error('Gemini API error:', response.status, usedModel, data && data.error && data.error.message);
       return res.status(502).json({ error: 'The AI service is temporarily unavailable.' });
     }
 
